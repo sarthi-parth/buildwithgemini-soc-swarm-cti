@@ -619,3 +619,40 @@ async def get_settings():
         "polling_interval_minutes": settings.POLLING_INTERVAL_MINUTES,
         "max_parallel_investigations": settings.MAX_PARALLEL_INVESTIGATIONS
     }
+
+# -------------------------------------------------------------
+# DAILY NEWSLETTERS & HISTORICAL ARCHIVE
+# -------------------------------------------------------------
+@router.get("/newsletters/dates")
+async def get_newsletter_dates():
+    import sqlite3
+    from app.services.newsletter_service import list_all_newsletter_dates
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    dates = list_all_newsletter_dates(con)
+    con.close()
+    return dates
+
+@router.get("/newsletters/{report_date}")
+async def get_newsletter_by_date(report_date: str):
+    import sqlite3
+    from app.services.newsletter_service import get_daily_newsletter, generate_daily_newsletter
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    nl = get_daily_newsletter(con, report_date)
+    if not nl:
+        nl = generate_daily_newsletter(con, target_date=report_date)
+    con.close()
+    if not nl:
+        raise HTTPException(status_code=404, detail=f"No newsletter found for date {report_date}")
+    return nl
+
+@router.post("/newsletters/generate")
+async def generate_newsletter_endpoint(target_date: Optional[str] = None):
+    import sqlite3
+    from app.services.newsletter_service import generate_daily_newsletter
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    nl = generate_daily_newsletter(con, target_date=target_date)
+    con.close()
+    return nl
