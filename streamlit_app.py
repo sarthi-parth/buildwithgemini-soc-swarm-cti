@@ -22,12 +22,20 @@ try:
         init_newsletter_schema, generate_daily_newsletter, 
         list_all_newsletter_dates, get_daily_newsletter
     )
+    from app.services.rule_generator import generate_siem_rules_for_incident
+    from app.services.stix_service import generate_stix_bundle
+    from app.services.asset_matcher import match_incident_to_assets, DEFAULT_ORG_STACK
+    from app.services.webhook_service import build_slack_block_kit_payload, send_webhook_alert
 except ImportError:
     from backend.app.services.live_fetcher import PLATFORMS_CONFIG, fetch_live_items_from_platform, ingest_live_platform_items
     from backend.app.services.newsletter_service import (
         init_newsletter_schema, generate_daily_newsletter, 
         list_all_newsletter_dates, get_daily_newsletter
     )
+    from backend.app.services.rule_generator import generate_siem_rules_for_incident
+    from backend.app.services.stix_service import generate_stix_bundle
+    from backend.app.services.asset_matcher import match_incident_to_assets, DEFAULT_ORG_STACK
+    from backend.app.services.webhook_service import build_slack_block_kit_payload, send_webhook_alert
 
 # -------------------------------------------------------------
 # PAGE CONFIGURATION & THEME
@@ -110,6 +118,10 @@ with st.sidebar:
         [
             "📰 Daily Threat Intel Digest & Newsletters",
             "📊 Executive Dashboard",
+            "🛡️ SIEM & EDR Rule Synthesizer",
+            "🎯 Tech Stack Watchdog & Runbooks",
+            "📦 STIX 2.1 & TAXII Exporter",
+            "💬 ChatOps & Slack Dispatcher",
             "🌐 Live Multi-Platform Fetcher",
             "📋 Threat Intelligence Feed",
             "🔍 IOC Explorer",
@@ -739,3 +751,218 @@ elif menu == "⚙️ Notifications & Settings":
         """)
         
     con.close()
+
+# -------------------------------------------------------------
+# TAB: SIEM & EDR RULE SYNTHESIZER
+# -------------------------------------------------------------
+elif menu == "🛡️ SIEM & EDR Rule Synthesizer":
+    st.title("🛡️ Autonomous SIEM & EDR Rule Synthesizer")
+    st.caption("Translate discovered threat intelligence and active botnet C2s into production-grade detection and firewall rules")
+    
+    con = get_db()
+    cur = con.cursor()
+    incidents = cur.execute("SELECT id, title, severity, category FROM incidents ORDER BY created_at DESC LIMIT 60").fetchall()
+    
+    if not incidents:
+        st.info("No threat incidents recorded yet.")
+        con.close()
+    else:
+        incident_map = {f"[{i['severity']}] {i['title'][:70]}": i['id'] for i in incidents}
+        selected_label = st.selectbox("Select Incident to Synthesize Rules", list(incident_map.keys()))
+        selected_id = incident_map[selected_label]
+        
+        # Load incident, iocs, ioas
+        inc_data = cur.execute("SELECT * FROM incidents WHERE id = ?", (selected_id,)).fetchone()
+        iocs_data = cur.execute("""
+            SELECT i.ioc_type, i.normalized_value, i.defanged_value 
+            FROM iocs i 
+            JOIN incident_iocs ii ON i.id = ii.ioc_id 
+            WHERE ii.incident_id = ?
+        """, (selected_id,)).fetchall()
+        ioas_data = cur.execute("SELECT technique_id, pattern_name, observed_behavior FROM indicators_of_attack WHERE incident_id = ?", (selected_id,)).fetchall()
+        con.close()
+        
+        inc_dict = dict(inc_data)
+        iocs_list = [dict(r) for r in iocs_data]
+        ioas_list = [dict(r) for r in ioas_data]
+        
+        rules = generate_siem_rules_for_incident(inc_dict, iocs_list, ioas_list)
+        
+        tab_sigma, tab_splunk, tab_elastic, tab_suricata, tab_waf, tab_yara = st.tabs([
+            "Sigma Rule (YAML)", "Splunk (SPL)", "Elasticsearch (KQL)", 
+            "Suricata / Snort (IDS)", "AWS WAF / Cloudflare (JSON)", "YARA Rule"
+        ])
+        
+        with tab_sigma:
+            st.markdown("#### 📜 Generic EDR / SIEM Sigma Rule")
+            st.code(rules["sigma"], language="yaml")
+            st.download_button(
+                "📥 Download Sigma Rule (.yml)",
+                rules["sigma"],
+                file_name=f"sigma_{selected_id[:8]}.yml",
+                mime="text/yaml"
+            )
+            
+        with tab_splunk:
+            st.markdown("#### ⚡ Splunk Enterprise Search Processing Language (SPL)")
+            st.code(rules["splunk"], language="spl")
+            
+        with tab_elastic:
+            st.markdown("#### 🔍 Elasticsearch & Kibana Query Language (KQL)")
+            st.code(rules["elastic"], language="sql")
+            
+        with tab_suricata:
+            st.markdown("#### 🌐 Suricata & Snort Network Intrusion Signatures")
+            st.code(rules["suricata"], language="text")
+            st.download_button(
+                "📥 Download Suricata Rule (.rules)",
+                rules["suricata"],
+                file_name=f"suricata_{selected_id[:8]}.rules",
+                mime="text/plain"
+            )
+            
+        with tab_waf:
+            st.markdown("#### 🧱 AWS WAF IPSet & Cloudflare Boundary Protection JSON")
+            st.code(rules["aws_waf"], language="json")
+            st.download_button(
+                "📥 Download AWS WAF JSON (.json)",
+                rules["aws_waf"],
+                file_name=f"waf_block_{selected_id[:8]}.json",
+                mime="application/json"
+            )
+            
+        with tab_yara:
+            st.markdown("#### 🧬 Host Memory & Artifact YARA Signature")
+            st.code(rules["yara"], language="text")
+
+# -------------------------------------------------------------
+# TAB: TECH STACK WATCHDOG & RUNBOOKS
+# -------------------------------------------------------------
+elif menu == "🎯 Tech Stack Watchdog & Runbooks":
+    st.title("🎯 Tech Stack Watchdog & Incident Impact Matcher")
+    st.caption("Continuously cross-reference all incoming threat advisories against your organization's monitored infrastructure")
+    
+    col_w1, col_w2 = st.columns([2, 1])
+    with col_w1:
+        assets_input = st.text_area(
+            "🏢 Monitored Technology Assets (Comma-separated)",
+            "Linux, Ubuntu, Windows Server, Kubernetes, Docker, Apache, Nginx, PostgreSQL, AWS, Palo Alto, Cisco, Fortinet, Python, LangChain, Gemini",
+            height=80
+        )
+        active_assets = [a.strip() for a in assets_input.split(",") if a.strip()]
+        
+    con = get_db()
+    cur = con.cursor()
+    all_incidents = cur.execute("SELECT * FROM incidents ORDER BY created_at DESC LIMIT 100").fetchall()
+    con.close()
+    
+    matches = []
+    for inc in all_incidents:
+        inc_dict = dict(inc)
+        res = match_incident_to_assets(inc_dict, active_assets)
+        if res["is_impacted"]:
+            matches.append((inc_dict, res))
+            
+    with col_w2:
+        st.metric("Monitored Assets", len(active_assets))
+        st.metric("Direct Exposures Discovered", len(matches), delta=f"{len(matches)} At Risk", delta_color="inverse")
+        
+    st.divider()
+    st.subheader(f"🚨 Exposed Asset Findings ({len(matches)} Incidents)")
+    
+    if not matches:
+        st.success("✅ Clean Bill of Health: No direct matches found between current active tech stack and recent threat intelligence.")
+    else:
+        for inc_dict, res in matches:
+            exposure_color = "red" if "CRITICAL" in res["exposure_level"] else "orange"
+            with st.expander(f"⚠️ [{res['exposure_level']}] {inc_dict['title']} — Impacted: {', '.join(res['matched_assets'])}"):
+                st.markdown(f"**Affected Monitored Technologies:** `{', '.join(res['matched_assets'])}`")
+                st.markdown(f"**Severity:** `{inc_dict['severity']}` | **Category:** `{inc_dict['category']}`")
+                st.markdown(f"**Summary:** {inc_dict['summary']}")
+                
+                st.markdown("#### 🛠️ Automated Emergency Remediation Runbook")
+                for step in res["runbook"]:
+                    st.markdown(f"- {step}")
+
+# -------------------------------------------------------------
+# TAB: STIX 2.1 & TAXII EXPORTER
+# -------------------------------------------------------------
+elif menu == "📦 STIX 2.1 & TAXII Exporter":
+    st.title("📦 STIX 2.1 Standard Threat Intel Exporter")
+    st.caption("Interoperable Threat Intelligence Sharing format compliant with Oasis STIX 2.1 & TAXII 2.1")
+    
+    con = get_db()
+    cur = con.cursor()
+    incidents = [dict(r) for r in cur.execute("SELECT id, title, summary, category, severity FROM incidents LIMIT 50").fetchall()]
+    iocs = [dict(r) for r in cur.execute("SELECT id, ioc_type, normalized_value, defanged_value FROM iocs LIMIT 100").fetchall()]
+    ioas = [dict(r) for r in cur.execute("SELECT id, technique_id, pattern_name, observed_behavior FROM indicators_of_attack LIMIT 50").fetchall()]
+    con.close()
+    
+    bundle = generate_stix_bundle(incidents, iocs, ioas)
+    bundle_json = json.dumps(bundle, indent=2)
+    
+    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1.metric("STIX Objects Generated", len(bundle["objects"]))
+    col_s2.metric("Spec Version", bundle["spec_version"])
+    col_s3.metric("Bundle ID", bundle["id"][:18] + "...")
+    
+    st.download_button(
+        "📥 Download Official STIX 2.1 Bundle (JSON)",
+        bundle_json,
+        file_name="soc_swarm_stix21_bundle.json",
+        mime="application/json",
+        type="primary"
+    )
+    
+    st.markdown("#### 🔗 Automated TAXII 2.1 Server Endpoint")
+    st.info("External enterprise SIEMs (Microsoft Sentinel, Cortex XSOAR, Splunk, MISP) can poll this endpoint directly: `https://soc-swarm-cti-235215015655.asia-south2.run.app/api/stix2/bundle`")
+    
+    with st.expander("🔍 Inspect Full STIX 2.1 JSON Payload", expanded=False):
+        st.code(bundle_json, language="json")
+
+# -------------------------------------------------------------
+# TAB: CHATOPS & SLACK DISPATCHER
+# -------------------------------------------------------------
+elif menu == "💬 ChatOps & Slack Dispatcher":
+    st.title("💬 SOC ChatOps & Slack Webhook Dispatcher")
+    st.caption("Broadcast high-priority disclosures and defanged IOCs to Slack or Microsoft Teams channels")
+    
+    con = get_db()
+    cur = con.cursor()
+    incidents = cur.execute("SELECT id, title, severity, category, summary, affected_organization, initial_access_vector FROM incidents ORDER BY created_at DESC LIMIT 50").fetchall()
+    
+    if incidents:
+        incident_map = {f"[{i['severity']}] {i['title'][:70]}": i['id'] for i in incidents}
+        selected_label = st.selectbox("Select Incident to Dispatch", list(incident_map.keys()))
+        selected_id = incident_map[selected_label]
+        
+        selected_inc = dict(cur.execute("SELECT * FROM incidents WHERE id = ?", (selected_id,)).fetchone())
+        iocs_data = [dict(r) for r in cur.execute("""
+            SELECT i.ioc_type, i.defanged_value 
+            FROM iocs i 
+            JOIN incident_iocs ii ON i.id = ii.ioc_id 
+            WHERE ii.incident_id = ?
+        """, (selected_id,)).fetchall()]
+        con.close()
+        
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            webhook_url = st.text_input("Slack Incoming Webhook URL (Optional)", "", placeholder="https://hooks.slack.com/services/...")
+            channel = st.text_input("Target Channel", "#soc-threat-intel")
+            
+            payload = build_slack_block_kit_payload(selected_inc, iocs_data, channel=channel)
+            
+            if st.button("🚀 Dispatch Alert to Slack", type="primary"):
+                res = send_webhook_alert(webhook_url, payload)
+                if res["status"] == "DELIVERED":
+                    st.success(f"Alert successfully broadcasted to Slack ({res['status_code']})!")
+                else:
+                    st.info(f"Payload generated & verified in preview mode! (Live dispatch requires configured incoming webhook URL).")
+                    
+        with col_c2:
+            st.markdown("#### 📱 Slack Block-Kit Message Preview")
+            st.json(payload)
+    else:
+        st.info("No incidents found to dispatch.")
+        con.close()
+

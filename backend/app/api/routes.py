@@ -656,3 +656,119 @@ async def generate_newsletter_endpoint(target_date: Optional[str] = None):
     nl = generate_daily_newsletter(con, target_date=target_date)
     con.close()
     return nl
+
+# -------------------------------------------------------------
+# ENTERPRISE ENHANCEMENTS: STIX 2.1, RULES, WATCHDOG, WEBHOOKS
+# -------------------------------------------------------------
+@router.get("/stix2/bundle")
+async def get_stix_bundle(db: AsyncSession = Depends(get_db)):
+    import sqlite3
+    from app.services.stix_service import generate_stix_bundle
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    cur = con.cursor()
+    cur.execute("SELECT id, title, summary, category, severity FROM incidents LIMIT 50")
+    incidents = [{"id": r[0], "title": r[1], "summary": r[2], "category": r[3], "severity": r[4]} for r in cur.fetchall()]
+    cur.execute("SELECT id, ioc_type, normalized_value, defanged_value FROM iocs LIMIT 100")
+    iocs = [{"id": r[0], "ioc_type": r[1], "normalized_value": r[2], "defanged_value": r[3]} for r in cur.fetchall()]
+    cur.execute("SELECT id, technique_id, pattern_name, observed_behavior FROM indicators_of_attack LIMIT 50")
+    ioas = [{"id": r[0], "technique_id": r[1], "pattern_name": r[2], "observed_behavior": r[3]} for r in cur.fetchall()]
+    con.close()
+    bundle = generate_stix_bundle(incidents, iocs, ioas)
+    return bundle
+
+class RuleGenRequest(BaseModel):
+    incident_id: str
+
+@router.post("/rules/generate")
+async def generate_rules_endpoint(req: RuleGenRequest):
+    import sqlite3
+    from app.services.rule_generator import generate_siem_rules_for_incident
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    cur = con.cursor()
+    cur.execute("SELECT id, title, summary, category, severity FROM incidents WHERE id = ?", (req.incident_id,))
+    row = cur.fetchone()
+    if not row:
+        con.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc = {"id": row[0], "title": row[1], "summary": row[2], "category": row[3], "severity": row[4]}
+    cur.execute("""
+        SELECT i.ioc_type, i.normalized_value, i.defanged_value 
+        FROM iocs i 
+        JOIN incident_iocs ii ON i.id = ii.ioc_id 
+        WHERE ii.incident_id = ?
+    """, (req.incident_id,))
+    iocs = [{"ioc_type": r[0], "normalized_value": r[1], "defanged_value": r[2]} for r in cur.fetchall()]
+    cur.execute("SELECT technique_id, pattern_name, observed_behavior FROM indicators_of_attack WHERE incident_id = ?", (req.incident_id,))
+    ioas = [{"technique_id": r[0], "pattern_name": r[1], "observed_behavior": r[2]} for r in cur.fetchall()]
+    con.close()
+    return generate_siem_rules_for_incident(inc, iocs, ioas)
+
+class WatchdogRequest(BaseModel):
+    assets: List[str]
+
+@router.post("/watchdog/match")
+async def match_watchdog_assets(req: WatchdogRequest):
+    import sqlite3
+    from app.services.asset_matcher import match_incident_to_assets
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    cur = con.cursor()
+    cur.execute("SELECT id, title, summary, affected_organization, affected_systems, severity FROM incidents ORDER BY created_at DESC LIMIT 50")
+    results = []
+    for r in cur.fetchall():
+        inc = {
+            "id": r[0], "title": r[1], "summary": r[2], 
+            "affected_organization": r[3], "affected_systems": r[4], "severity": r[5]
+        }
+        match_res = match_incident_to_assets(inc, req.assets)
+        if match_res["is_impacted"]:
+            results.append({
+                "incident": inc,
+                "analysis": match_res
+            })
+    con.close()
+    return {
+        "monitored_assets": req.assets,
+        "impacted_incidents_count": len(results),
+        "matches": results
+    }
+
+class SlackAlertRequest(BaseModel):
+    incident_id: str
+    webhook_url: Optional[str] = ""
+    channel: Optional[str] = "#soc-threat-intel"
+
+@router.post("/webhooks/slack/simulate")
+async def simulate_slack_alert(req: SlackAlertRequest):
+    import sqlite3
+    from app.services.webhook_service import build_slack_block_kit_payload, send_webhook_alert
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    cur = con.cursor()
+    cur.execute("SELECT id, title, summary, category, severity, affected_organization, initial_access_vector FROM incidents WHERE id = ?", (req.incident_id,))
+    row = cur.fetchone()
+    if not row:
+        con.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc = {
+        "id": row[0], "title": row[1], "summary": row[2], 
+        "category": row[3], "severity": row[4],
+        "affected_organization": row[5], "initial_access_vector": row[6]
+    }
+    cur.execute("""
+        SELECT i.ioc_type, i.defanged_value 
+        FROM iocs i 
+        JOIN incident_iocs ii ON i.id = ii.ioc_id 
+        WHERE ii.incident_id = ?
+    """, (req.incident_id,))
+    iocs = [{"ioc_type": r[0], "defanged_value": r[1]} for r in cur.fetchall()]
+    con.close()
+    
+    payload = build_slack_block_kit_payload(inc, iocs, channel=req.channel)
+    dispatch = send_webhook_alert(req.webhook_url, payload)
+    return {
+        "dispatch_status": dispatch,
+        "payload_preview": payload
+    }
