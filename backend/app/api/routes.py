@@ -772,3 +772,50 @@ async def simulate_slack_alert(req: SlackAlertRequest):
         "dispatch_status": dispatch,
         "payload_preview": payload
     }
+
+# -------------------------------------------------------------
+# MITRE ATT&CK, PLAYBOOKS, & EPSS SCORING ENDPOINTS
+# -------------------------------------------------------------
+@router.get("/mitre/matrix")
+async def get_mitre_matrix_endpoint():
+    import sqlite3
+    from app.services.mitre_service import build_mitre_matrix
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    cur = con.cursor()
+    cur.execute("SELECT id, title, summary, initial_access_vector FROM incidents LIMIT 100")
+    incidents = [{"id": r[0], "title": r[1], "summary": r[2], "initial_access_vector": r[3]} for r in cur.fetchall()]
+    cur.execute("SELECT incident_id, technique_id, pattern_name, observed_behavior FROM indicators_of_attack LIMIT 100")
+    ioas = [{"incident_id": r[0], "technique_id": r[1], "name": r[2], "behavior_description": r[3]} for r in cur.fetchall()]
+    con.close()
+    return build_mitre_matrix(incidents, ioas)
+
+@router.get("/playbooks")
+async def get_available_playbooks():
+    from app.services.playbook_service import list_available_playbooks
+    return list_available_playbooks()
+
+class PlaybookRunRequest(BaseModel):
+    playbook_key: str
+    target_ip: Optional[str] = "198.51.100.44"
+    target_domain: Optional[str] = "malicious-c2.net"
+
+@router.post("/playbooks/run")
+async def execute_playbook_run(req: PlaybookRunRequest):
+    from app.services.playbook_service import get_playbook_run
+    return get_playbook_run(req.playbook_key, req.target_ip, req.target_domain)
+
+@router.get("/scoring/epss")
+async def get_epss_prioritization(limit: int = 50):
+    import sqlite3
+    from app.services.epss_service import prioritize_incidents_by_epss
+    db_file = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    con = sqlite3.connect(db_file)
+    cur = con.cursor()
+    cur.execute("SELECT id, title, summary, category, severity, created_at FROM incidents ORDER BY created_at DESC LIMIT ?", (limit,))
+    incidents = [
+        {"id": r[0], "title": r[1], "summary": r[2], "category": r[3], "severity": r[4], "created_at": r[5]}
+        for r in cur.fetchall()
+    ]
+    con.close()
+    return prioritize_incidents_by_epss(incidents)

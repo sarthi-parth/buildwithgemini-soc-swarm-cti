@@ -6,6 +6,7 @@ def generate_siem_rules_for_incident(incident: Dict[str, Any], iocs: List[Dict[s
     - Sigma Rule (YAML)
     - Splunk SPL
     - Elastic KQL
+    - Microsoft Defender / Sentinel Kusto (KQL)
     - Suricata IDS / IPS Rule
     - AWS WAF / Cloudflare IP Block JSON
     - YARA Rule
@@ -79,11 +80,23 @@ level: {severity}
     # 3. ELASTICSEARCH KQL
     elastic_kql = f"""(event.category: "network" AND destination.ip: "{primary_ip}") OR (dns.question.name: *{primary_domain}*) OR (vulnerability.id: "{cve_id}")"""
 
-    # 4. SURICATA IDS / IPS SIGNATURE
+    # 4. MICROSOFT DEFENDER / SENTINEL KUSTO (KQL)
+    defender_kql = f"""// Microsoft Defender XDR & Sentinel Hunting Query for {title[:40]}
+DeviceNetworkEvents
+| where RemoteIP == "{primary_ip}" or RemoteUrl has "{primary_domain}"
+| project Timestamp, DeviceName, ActionType, RemoteIP, RemotePort, RemoteUrl, InitiatingProcessFileName, InitiatingProcessCommandLine
+| union (
+    DeviceEvents
+    | where InitiatingProcessCommandLine has "{cve_id}" or AdditionalFields has "{cve_id}"
+    | project Timestamp, DeviceName, ActionType, RemoteIP = "", RemotePort = 0, RemoteUrl = "", InitiatingProcessFileName, InitiatingProcessCommandLine
+)
+| sort by Timestamp desc"""
+
+    # 5. SURICATA IDS / IPS SIGNATURE
     suricata_rule = f"""alert tcp $HOME_NET any -> {primary_ip} any (msg:"SOC_SWARM MALWARE Active C2 Connection to [{primary_ip}] - {title[:35]}"; classtype:trojan-activity; sid:9900101; rev:1; metadata:technique {technique_id}, cve {cve_id};)
 alert dns $HOME_NET any -> any any (msg:"SOC_SWARM DNS Query to Suspect Domain [{primary_domain}]"; dns.query; content:"{primary_domain}"; nocase; classtype:trojan-activity; sid:9900102; rev:1;)"""
 
-    # 5. AWS WAF IP SET / CLOUDFLARE BLOCKLIST JSON
+    # 6. AWS WAF IP SET / CLOUDFLARE BLOCKLIST JSON
     aws_waf_rule = f"""{{
   "Name": "SOC_SWARM_BLOCK_{slug[:25].upper()}",
   "Scope": "REGIONAL",
@@ -94,7 +107,7 @@ alert dns $HOME_NET any -> any any (msg:"SOC_SWARM DNS Query to Suspect Domain [
   "Description": "Block rule automatically synthesized for {title[:50]} ({technique_id})"
 }}"""
 
-    # 6. YARA RULE
+    # 7. YARA RULE
     yara_rule = f"""rule SOC_SWARM_{slug[:25]} {{
     meta:
         description = "Detection pattern for {title[:60]}"
@@ -113,6 +126,7 @@ alert dns $HOME_NET any -> any any (msg:"SOC_SWARM DNS Query to Suspect Domain [
         "sigma": sigma_rule.strip(),
         "splunk": splunk_spl.strip(),
         "elastic": elastic_kql.strip(),
+        "microsoft_defender": defender_kql.strip(),
         "suricata": suricata_rule.strip(),
         "aws_waf": aws_waf_rule.strip(),
         "yara": yara_rule.strip()

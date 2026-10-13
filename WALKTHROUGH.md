@@ -131,8 +131,58 @@ graph TD
 - Public URL: [https://github.com/sarthi-parth/buildwithgemini-soc-swarm-cti](https://github.com/sarthi-parth/buildwithgemini-soc-swarm-cti)
 - Pushed Commit: `76840ed` (*feat: add SIEM/EDR rule synthesizer, STIX 2.1 exporter, tech stack watchdog runbooks, and Slack ChatOps*)
 
-### 4. Automated Test Suite
-- Test Runner: `pytest` (**14/14 tests passed**)
+### 4. MITRE ATT&CK Enterprise Matrix Navigator
+- Evaluates 14 Enterprise Tactics (Reconnaissance, Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Discovery, Lateral Movement, Collection, C2, Exfiltration, Impact).
+- Real-time heat-map correlating active threat telemetry and behavioral IOAs against MITRE technique IDs (`T1190`, `T1566`, `T1059`, `T1071`, `T1486`).
+- Direct technique drill-down with correlated incidents and defensive mitigation mappings.
+
+### 5. Autonomous Incident Response Playbook Runner (NIST SP 800-61)
+- Interactive containment and remediation execution across 3 primary threat scenarios:
+  1. **Ransomware Outbreak & Encryption Neutralization** (Endpoint layer-2/3 isolation, krbtgt Kerberos rotation, C2 egress DROP rules)
+  2. **Zero-Day Public Exploitation (RCE) Response** (Socket enumeration, reverse proxy WAF virtual patching, VPN allowlisting)
+  3. **Botnet C2 Beaconing & Lateral Infection Triage** (NetFlow jitter correlation, internal DNS sinkholing, BGP null-routing)
+- Generates copyable, production-ready mitigation scripts across PowerShell, Linux iptables, Nginx, Zeek, and Cisco IOS.
+
+### 6. EPSS & CVSS Threat Prioritization Engine
+- Computes real-world Exploit Prediction Scoring System (EPSS) probability percentages (0–100%) and percentile rankings.
+- 4-Quadrant Threat Triage Matrix:
+  - **CRITICAL ZERO-HOUR** (EPSS > 70%, SLA < 24h)
+  - **HIGH PRIORITY** (EPSS > 40%, SLA < 72h)
+  - **ELEVATED MONITORING** (Bi-weekly maintenance)
+  - **STANDARD HYGIENE**
+- Interactive Zero-Day Sandbox Calculator for ad-hoc threat evaluation.
+
+### 7. Multi-SIEM/EDR Hunting Query Synthesizer (7 Formats)
+- Production-ready signatures for:
+  1. Sigma Rule (YAML)
+  2. Splunk Enterprise (SPL)
+  3. Elasticsearch / Kibana (KQL)
+  4. **Microsoft Defender XDR & Microsoft Sentinel Advanced Hunting (KQL)**
+  5. Suricata & Snort NIDS Signatures
+  6. AWS WAF IPSet & Cloudflare Blocklist JSON
+  7. YARA Host Memory & Binary Rules
+
+---
+
+## 4. Production Deployment & Verification
+
+### 1. Cloud Run Deployment
+- Service: `soc-swarm-cti`
+- Production URL: [https://soc-swarm-cti-235215015655.asia-south2.run.app](https://soc-swarm-cti-235215015655.asia-south2.run.app)
+- Traffic: 100% routed
+- HTTP Verification:
+  ```bash
+  curl -s -I https://soc-swarm-cti-235215015655.asia-south2.run.app
+  HTTP/2 200
+  ```
+
+### 2. Vertex AI Agent Platform Deployment (Reasoning Engine)
+- Target: `agent_runtime` (Location: `us-east1`)
+- Agent Runtime ID: `projects/235215015655/locations/us-east1/reasoningEngines/6059220564185186304`
+- Protocol: Agent-to-Agent (A2A)
+
+### 3. Automated Test Suite
+- Test Runner: `pytest` (**18/18 tests passed - 100% pass rate**)
   - `test_rule_generator`: Passed
   - `test_stix_bundle_generation`: Passed
   - `test_asset_matcher`: Passed
@@ -147,3 +197,7 @@ graph TD
   - `test_email_payload_generation`: Passed
   - `test_prompt_injection_sanitization_in_iocs`: Passed
   - `test_email_recipient_tamper_defense`: Passed
+  - `test_mitre_matrix_generation`: Passed
+  - `test_playbook_service`: Passed
+  - `test_epss_scoring`: Passed
+  - `test_microsoft_defender_kql_rule_generation`: Passed

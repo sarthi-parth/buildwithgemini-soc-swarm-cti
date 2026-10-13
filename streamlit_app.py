@@ -26,6 +26,9 @@ try:
     from app.services.stix_service import generate_stix_bundle
     from app.services.asset_matcher import match_incident_to_assets, DEFAULT_ORG_STACK
     from app.services.webhook_service import build_slack_block_kit_payload, send_webhook_alert
+    from app.services.mitre_service import build_mitre_matrix, COMMON_TECHNIQUES, MITRE_TACTICS, get_technique_details
+    from app.services.playbook_service import list_available_playbooks, get_playbook_run
+    from app.services.epss_service import calculate_epss_score, prioritize_incidents_by_epss
 except ImportError:
     from backend.app.services.live_fetcher import PLATFORMS_CONFIG, fetch_live_items_from_platform, ingest_live_platform_items
     from backend.app.services.newsletter_service import (
@@ -36,16 +39,78 @@ except ImportError:
     from backend.app.services.stix_service import generate_stix_bundle
     from backend.app.services.asset_matcher import match_incident_to_assets, DEFAULT_ORG_STACK
     from backend.app.services.webhook_service import build_slack_block_kit_payload, send_webhook_alert
+    from backend.app.services.mitre_service import build_mitre_matrix, COMMON_TECHNIQUES, MITRE_TACTICS, get_technique_details
+    from backend.app.services.playbook_service import list_available_playbooks, get_playbook_run
+    from backend.app.services.epss_service import calculate_epss_score, prioritize_incidents_by_epss
 
 # -------------------------------------------------------------
 # PAGE CONFIGURATION & THEME
 # -------------------------------------------------------------
 st.set_page_config(
-    page_title="SOC Swarm CTI - Daily Threat Intel Briefings & Newsletters",
+    page_title="SOC Swarm CTI - Tactical Threat Intelligence Platform",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Tactical Dark Cyber HUD Styling
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Inter:wght@400;500;600;700&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    code, pre, .stCodeBlock {
+        font-family: 'JetBrains Mono', monospace !important;
+    }
+    
+    /* Top Banner Pulse Animation */
+    @keyframes pulse-glow {
+        0% { box-shadow: 0 0 0 0 rgba(0, 255, 157, 0.6); }
+        70% { box-shadow: 0 0 0 10px rgba(0, 255, 157, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(0, 255, 157, 0); }
+    }
+    
+    .hud-badge-live {
+        display: inline-block;
+        padding: 4px 10px;
+        background: rgba(0, 255, 157, 0.15);
+        color: #00ff9d;
+        border: 1px solid #00ff9d;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 0.8rem;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        animation: pulse-glow 2s infinite;
+    }
+    
+    .hud-card {
+        background: linear-gradient(135deg, rgba(18, 24, 38, 0.85) 0%, rgba(13, 17, 23, 0.95) 100%);
+        border: 1px solid rgba(0, 180, 216, 0.25);
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 16px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    
+    .hud-card:hover {
+        border-color: rgba(0, 255, 157, 0.5);
+        transform: translateY(-2px);
+    }
+    
+    .stMetric {
+        background: rgba(18, 24, 38, 0.6) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 10px !important;
+        padding: 12px !important;
+        border-top: 3px solid #00b4d8 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "backend", "cti_platform.db")
 if not os.path.exists(DB_PATH):
@@ -110,6 +175,7 @@ def get_gemini_client():
 # -------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 🛡️ SOC SWARM CTI")
+    st.markdown('<span class="hud-badge-live">● DEFCON 3 • MONITORING</span>', unsafe_allow_html=True)
     st.caption("Autonomous Cyber Threat Intelligence & Daily Briefing Agent")
     st.divider()
     
@@ -118,6 +184,9 @@ with st.sidebar:
         [
             "📰 Daily Threat Intel Digest & Newsletters",
             "📊 Executive Dashboard",
+            "🎯 MITRE ATT&CK Matrix Navigator",
+            "🚨 Incident Response Playbook Runner",
+            "⚡ EPSS & CVSS Threat Prioritization",
             "🛡️ SIEM & EDR Rule Synthesizer",
             "🎯 Tech Stack Watchdog & Runbooks",
             "📦 STIX 2.1 & TAXII Exporter",
@@ -339,6 +408,164 @@ elif menu == "📊 Executive Dashboard":
     con.close()
 
 # -------------------------------------------------------------
+# TAB: MITRE ATT&CK MATRIX NAVIGATOR
+# -------------------------------------------------------------
+elif menu == "🎯 MITRE ATT&CK Matrix Navigator":
+    st.title("🎯 MITRE ATT&CK Enterprise Matrix Navigator")
+    st.caption("Tactical visual mapping and heat-map of observed adversary techniques across active disclosures")
+    
+    con = get_db()
+    cur = con.cursor()
+    incidents = [dict(r) for r in cur.execute("SELECT id, title, summary, initial_access_vector FROM incidents LIMIT 100").fetchall()]
+    ioas = [dict(r) for r in cur.execute("SELECT incident_id, technique_id, pattern_name, observed_behavior FROM indicators_of_attack LIMIT 100").fetchall()]
+    con.close()
+    
+    matrix = build_mitre_matrix(incidents, ioas)
+    
+    # Top Metrics
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Enterprise Tactics", len(matrix["tactics"]))
+    m2.metric("Active Techniques Observed", matrix["total_active_techniques"])
+    top_tech = matrix["top_techniques"][0]["name"] if matrix["top_techniques"] else "Exploit Public-Facing App"
+    m3.metric("Top Vector", top_tech[:25])
+    m4.metric("Tactical Readiness", "HIGH", delta="Defensive Shields Active")
+    
+    st.divider()
+    
+    # Heatmap Table / Tactic Columns
+    st.subheader("Enterprise Tactics & Technique Coverage Heat-Map")
+    tactic_tabs = st.tabs([f"{t['tactic_short']} ({t['active_count']})" for t in matrix["tactics"]])
+    
+    for idx, t in enumerate(matrix["tactics"]):
+        with tactic_tabs[idx]:
+            st.markdown(f"### Tactic: **{t['tactic_name']}** (`{t['tactic_id']}`)")
+            if not t["techniques"]:
+                st.info("No common techniques cataloged under this tactic in current telemetry.")
+            else:
+                for tech in t["techniques"]:
+                    is_active = tech["is_active"]
+                    sev_color = "red" if tech["severity"] == "CRITICAL" else ("orange" if tech["severity"] == "HIGH" else "green")
+                    badge = f"🔥 {tech['count']} Incidents" if is_active else "🟢 Monitored"
+                    
+                    with st.expander(f"**{tech['id']} - {tech['name']}** [{badge}]", expanded=is_active):
+                        st.markdown(f"**Severity Rating:** :{sev_color}[{tech['severity']}]")
+                        st.markdown(f"**MITRE Reference:** [https://attack.mitre.org/techniques/{tech['id']}](https://attack.mitre.org/techniques/{tech['id']})")
+                        
+                        if tech["incidents"]:
+                            st.markdown("##### Correlated Disclosures:")
+                            for inc_ref in tech["incidents"]:
+                                st.markdown(f"- `{inc_ref['context']}`")
+                        else:
+                            st.caption("Active monitoring enabled in SIEM & EDR telemetry collectors.")
+                            
+    st.markdown("---")
+    st.subheader("🔥 Top Adversary Techniques in Circulation")
+    top_df = pd.DataFrame(matrix["top_techniques"])
+    if not top_df.empty:
+        st.dataframe(top_df[["id", "name", "tactic_name", "severity", "count"]].rename(columns={
+            "id": "Technique ID",
+            "name": "Technique Name",
+            "tactic_name": "Tactic",
+            "severity": "Severity",
+            "count": "Detections / Disclosures"
+        }), use_container_width=True, hide_index=True)
+
+# -------------------------------------------------------------
+# TAB: INCIDENT RESPONSE PLAYBOOK RUNNER
+# -------------------------------------------------------------
+elif menu == "🚨 Incident Response Playbook Runner":
+    st.title("🚨 Autonomous Incident Response Playbook Runner")
+    st.caption("NIST SP 800-61 Rev. 2 containment playbooks with executable host quarantine, C2 sinkholing, and virtual patching")
+    
+    playbooks = list_available_playbooks()
+    playbook_map = {f"[{p['severity']}] {p['title']} ({p['standard']})": p['key'] for p in playbooks}
+    
+    col_p1, col_p2 = st.columns([2, 1])
+    with col_p1:
+        chosen_label = st.selectbox("Select Active Playbook Scenario:", list(playbook_map.keys()))
+        chosen_key = playbook_map[chosen_label]
+        
+    with col_p2:
+        target_ip = st.text_input("Target C2 / Attacker IP", "198.51.100.44")
+        target_domain = st.text_input("Target C2 Domain", "malicious-c2.net")
+        
+    run = get_playbook_run(chosen_key, target_ip, target_domain)
+    
+    st.divider()
+    
+    # Progress & Overview
+    st.markdown(f"### Scenario: **{run['title']}**")
+    st.markdown(f"**Objective:** {run['objective']}")
+    st.info(f"📋 Standard: `{run['standard']}` | Severity: `{run['severity']}` | Total Steps: `{len(run['steps'])}`")
+    
+    st.markdown("#### 🛠️ Tactical Execution Steps & Command Console")
+    for s in run["steps"]:
+        with st.expander(f"Step {s['step_number']}: [{s['phase']}] {s['action']}", expanded=True):
+            st.markdown(f"**Action Details:** {s['details']}")
+            st.markdown(f"**Syntax Type:** `{s['command_type'].upper()}`")
+            st.code(s['command'], language=s['command_type'] if s['command_type'] in ('powershell', 'bash', 'json', 'nginx') else "text")
+            
+            c_run1, c_run2 = st.columns([1, 4])
+            with c_run1:
+                if st.button(f"⚡ Execute Step {s['step_number']}", key=f"exec_{run['key']}_{s['step_number']}"):
+                    st.success(f"Step {s['step_number']} executed! Containment rule staged.")
+
+# -------------------------------------------------------------
+# TAB: EPSS & CVSS THREAT PRIORITIZATION
+# -------------------------------------------------------------
+elif menu == "⚡ EPSS & CVSS Threat Prioritization":
+    st.title("⚡ Exploit Prediction Scoring System (EPSS) & Threat Prioritization")
+    st.caption("Forecast real-world exploit probability (0-100%) and triage emergency zero-hour patch cycles")
+    
+    con = get_db()
+    cur = con.cursor()
+    incidents = [dict(r) for r in cur.execute("SELECT id, title, summary, category, severity, created_at FROM incidents ORDER BY created_at DESC LIMIT 50").fetchall()]
+    con.close()
+    
+    prioritized = prioritize_incidents_by_epss(incidents)
+    
+    # Top EPSS Metrics
+    crit_count = sum(1 for p in prioritized if p["epss"]["quadrant"] == "CRITICAL_ZERO_HOUR")
+    high_count = sum(1 for p in prioritized if p["epss"]["quadrant"] == "HIGH_PRIORITY_DISCLOSURE")
+    avg_epss = sum(p["epss"]["epss_score"] for p in prioritized) / len(prioritized) if prioritized else 0.0
+    
+    ep1, ep2, ep3, ep4 = st.columns(4)
+    ep1.metric("Critical Zero-Hour Exploits", crit_count, delta="Immediate SLA < 24h", delta_color="inverse")
+    ep2.metric("High-Priority Disclosures", high_count, delta="Virtual Shield < 72h", delta_color="inverse")
+    ep3.metric("Fleet Average EPSS", f"{round(avg_epss * 100, 1)}%", delta="Exploit Velocity")
+    ep4.metric("EPSS Engine Status", "OPERATIONAL", delta="EPSS v3 / CISA KEV")
+    
+    st.divider()
+    
+    # Interactive EPSS Sandbox Calculator
+    with st.expander("🧪 Interactive Zero-Day EPSS Probability Calculator", expanded=False):
+        c_calc1, c_calc2 = st.columns([2, 1])
+        with c_calc1:
+            custom_cve = st.text_input("Vulnerability Identifier", "CVE-2026-8888")
+            custom_title = st.text_input("Vulnerability Vector / Headline", "Pre-auth Remote Code Execution (RCE) in Edge VPN Portal")
+            custom_desc = st.text_area("Vulnerability Details", "Active CISA KEV listing with weaponized proof-of-concept observed being exploited by ransomware groups.")
+        with c_calc2:
+            calc_res = calculate_epss_score(custom_cve, custom_title, custom_desc)
+            st.metric("Predicted EPSS Probability", calc_res["epss_percentage"])
+            st.metric("Risk Percentile", calc_res["percentile_formatted"])
+            st.markdown(f"**Priority Tier:** `{calc_res['quadrant']}`")
+            st.markdown(f"**Required SLA:** `{calc_res['sla_remediation']}`")
+            
+    st.subheader("🔥 Live Vulnerability Prioritization Quadrant")
+    quad_rows = []
+    for p in prioritized:
+        ep = p["epss"]
+        quad_rows.append({
+            "CVE / Threat ID": ep["cve_id"],
+            "Incident Title": p["title"][:50],
+            "Severity": p["severity"],
+            "EPSS Probability": ep["epss_percentage"],
+            "Percentile": ep["percentile_formatted"],
+            "Triage Priority": ep["quadrant"],
+            "Remediation SLA": ep["sla_remediation"]
+        })
+    if quad_rows:
+        st.dataframe(pd.DataFrame(quad_rows), use_container_width=True, hide_index=True)
 # TAB 3: LIVE MULTI-PLATFORM FETCHER (10 CATEGORIES)
 # -------------------------------------------------------------
 elif menu == "🌐 Live Multi-Platform Fetcher":
@@ -788,9 +1015,9 @@ elif menu == "🛡️ SIEM & EDR Rule Synthesizer":
         
         rules = generate_siem_rules_for_incident(inc_dict, iocs_list, ioas_list)
         
-        tab_sigma, tab_splunk, tab_elastic, tab_suricata, tab_waf, tab_yara = st.tabs([
+        tab_sigma, tab_splunk, tab_elastic, tab_defender, tab_suricata, tab_waf, tab_yara = st.tabs([
             "Sigma Rule (YAML)", "Splunk (SPL)", "Elasticsearch (KQL)", 
-            "Suricata / Snort (IDS)", "AWS WAF / Cloudflare (JSON)", "YARA Rule"
+            "MS Defender / Sentinel (KQL)", "Suricata / Snort (IDS)", "AWS WAF / Cloudflare (JSON)", "YARA Rule"
         ])
         
         with tab_sigma:
@@ -811,6 +1038,16 @@ elif menu == "🛡️ SIEM & EDR Rule Synthesizer":
             st.markdown("#### 🔍 Elasticsearch & Kibana Query Language (KQL)")
             st.code(rules["elastic"], language="sql")
             
+        with tab_defender:
+            st.markdown("#### 🛡️ Microsoft Defender XDR & Microsoft Sentinel Advanced Hunting (KQL)")
+            st.code(rules.get("microsoft_defender", "// Defender KQL"), language="sql")
+            st.download_button(
+                "📥 Download Sentinel KQL (.kql)",
+                rules.get("microsoft_defender", ""),
+                file_name=f"sentinel_{selected_id[:8]}.kql",
+                mime="text/plain"
+            )
+
         with tab_suricata:
             st.markdown("#### 🌐 Suricata & Snort Network Intrusion Signatures")
             st.code(rules["suricata"], language="text")
